@@ -37,6 +37,17 @@ st.markdown(
       [data-testid="stMetricValue"] {{ font-size: 1.5rem; color: {INK}; }}
       [data-testid="stMetricLabel"] {{ color: {MUTED}; }}
       .caption-note {{ color: {MUTED}; font-size: 0.82rem; }}
+
+      /* Yellow = you can type or change this value */
+      [data-testid="stNumberInput"] input,
+      [data-testid="stTextInput"] input {{
+        background-color: #FFF3B0 !important;
+        border: 1.5px solid #E0B800 !important;
+      }}
+      [data-testid="stNumberInput"] button {{
+        background-color: #FFF3B0 !important;
+        border: 1.5px solid #E0B800 !important;
+      }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -301,6 +312,49 @@ def customer_summary(frame: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("Profit", ascending=False)
 
 
+BUCKET_ORDER = ["Frequent (\u226410d)", "Monthly-ish (11\u201345d)",
+               "Occasional (46\u2013120d)", "Rare (>120d)", "One-time buyer"]
+
+
+@st.cache_data(show_spinner=False)
+def customer_frequency(frame: pd.DataFrame, as_of) -> pd.DataFrame:
+    """
+    Per-customer visit cadence, from named-customer rows only. Average days
+    between visits is span / (transactions - 1) — undefined for a single
+    purchase, which is its own bucket rather than an assumed frequency.
+    """
+    named = frame[frame["_member"]]
+    if named.empty:
+        return pd.DataFrame()
+    g = named.groupby(COL["cust"]).agg(
+        Transactions=(COL["doc"], "nunique"),
+        FirstDate=("_date", "min"),
+        LastDate=("_date", "max"),
+        Revenue=(COL["amount"], "sum"),
+        Profit=(COL["profit"], "sum"),
+    ).reset_index().rename(columns={COL["cust"]: "Customer"})
+
+    g["SpanDays"] = (pd.to_datetime(g["LastDate"]) - pd.to_datetime(g["FirstDate"])).dt.days
+    g["AvgDaysBetween"] = np.where(g["Transactions"] > 1,
+                                   g["SpanDays"] / (g["Transactions"] - 1), np.nan)
+    g["DaysSinceLast"] = (pd.Timestamp(as_of) - pd.to_datetime(g["LastDate"])).dt.days
+
+    def _bucket(row):
+        if row["Transactions"] == 1 or pd.isna(row["AvgDaysBetween"]):
+            return "One-time buyer"
+        d = row["AvgDaysBetween"]
+        if d <= 10:
+            return "Frequent (\u226410d)"
+        if d <= 45:
+            return "Monthly-ish (11\u201345d)"
+        if d <= 120:
+            return "Occasional (46\u2013120d)"
+        return "Rare (>120d)"
+
+    g["Frequency"] = g.apply(_bucket, axis=1)
+    return g.sort_values("Revenue", ascending=False)
+
+
 # ----------------------------------------------------------------------------
 # Sidebar — upload
 # ----------------------------------------------------------------------------
@@ -484,8 +538,9 @@ st.markdown(
     unsafe_allow_html=True)
 
 (tab_overview, tab_stock, tab_groups, tab_staff, tab_customers,
- tab_compare, tab_report) = st.tabs(
-    ["Overview", "Stock", "Item Groups", "Staff", "Customers", "Compare", "Report"])
+ tab_behavior, tab_compare, tab_report) = st.tabs(
+    ["Overview", "Stock", "Item Groups", "Staff", "Customers", "Customer Behavior",
+     "Compare", "Report"])
 
 # ----------------------------------------------------------------------------
 # Overview
@@ -821,6 +876,96 @@ with tab_customers:
         if len(pv):
             st.plotly_chart(plot_entity_trend(pv, "Revenue RM"), use_container_width=True)
         st.caption("Change 'Group by' in the sidebar to see this at a different granularity.")
+
+# ----------------------------------------------------------------------------
+# Customer Behavior
+# ----------------------------------------------------------------------------
+
+with tab_behavior:
+    freq_tbl = customer_frequency(df, end_d)
+
+    if freq_tbl.empty:
+        st.info("No named-customer transactions in this selection — every line is CASH.")
+    else:
+        st.subheader("How loyal is your customer base?")
+        st.caption(
+            "Based on average days between purchases for each named customer, over "
+            "the period and filters set in the sidebar. One-time buyers only have a "
+            "single transaction here, so a cadence can't be measured yet.")
+
+        bsum = (freq_tbl.groupby("Frequency")
+               .agg(Customers=("Customer", "nunique"), Revenue=("Revenue", "sum"),
+                    Profit=("Profit", "sum"))
+               .reindex(BUCKET_ORDER).fillna(0).reset_index())
+        bsum["Customers"] = bsum["Customers"].astype(int)
+
+        fb = make_subplots(specs=[[{"secondary_y": True}]])
+        fb.add_bar(x=bsum["Frequency"], y=bsum["Customers"], name="Customers",
+                  marker_color=TEAL,
+                  hovertemplate="%{x}<br>%{y:,.0f} customers<extra></extra>")
+        fb.add_scatter(x=bsum["Frequency"], y=bsum["Revenue"], name="Revenue",
+                      mode="lines+markers", line=dict(color=SAND, width=2),
+                      secondary_y=True,
+                      hovertemplate="%{x}<br>RM %{y:,.0f}<extra></extra>")
+        fb.update_layout(height=360, margin=dict(t=10, b=10, l=0, r=0),
+                         plot_bgcolor="rgba(0,0,0,0)",
+                         legend=dict(orientation="h", y=1.12, x=0), xaxis_tickangle=-10)
+        fb.update_yaxes(title_text="Customers", secondary_y=False, gridcolor="#EDEFEF")
+        fb.update_yaxes(title_text="Revenue RM", secondary_y=True, showgrid=False)
+        st.plotly_chart(fb, use_container_width=True)
+
+        st.dataframe(
+            bsum.style.format({"Customers": "{:,.0f}", "Revenue": "RM {:,.2f}",
+                              "Profit": "RM {:,.2f}"}),
+            use_container_width=True, hide_index=True)
+
+        st.divider()
+        st.subheader("Look up a customer")
+        pick_cust = st.selectbox("Customer", freq_tbl["Customer"].tolist(),
+                                 key="behavior_cust_pick")
+        row = freq_tbl[freq_tbl["Customer"] == pick_cust].iloc[0]
+
+        bc = st.columns(5)
+        bc[0].metric("Revenue", rm(row["Revenue"]))
+        bc[1].metric("Profit", rm(row["Profit"]))
+        bc[2].metric("Transactions", f"{int(row['Transactions']):,}")
+        bc[3].metric("Avg days between visits",
+                    f"{row['AvgDaysBetween']:.0f}" if pd.notna(row["AvgDaysBetween"]) else "—")
+        bc[4].metric("Days since last purchase", f"{int(row['DaysSinceLast']):,}")
+
+        cust_rows = df[df[COL["cust"]] == pick_cust]
+        cust_trend = build_trend(cust_rows, key, sort_key, exclude_no_cost)
+        if len(cust_trend):
+            st.markdown(f"**{grain} visits — {pick_cust}**")
+            fct = go.Figure()
+            fct.add_bar(x=cust_trend[key], y=cust_trend["revenue"], marker_color=TEAL,
+                       hovertemplate="%{x}<br>RM %{y:,.0f}<extra></extra>")
+            fct.update_layout(height=280, margin=dict(t=10, b=10, l=0, r=0),
+                             plot_bgcolor="rgba(0,0,0,0)")
+            fct.update_yaxes(gridcolor="#EDEFEF", title_text="Revenue RM")
+            st.plotly_chart(fct, use_container_width=True)
+
+        cust_items = item_summary(cust_rows, exclude_no_cost)
+        if len(cust_items):
+            st.markdown(f"**What {pick_cust} buys**")
+            top_cust_items = cust_items.nlargest(min(15, len(cust_items)), "Revenue")
+            fci = go.Figure()
+            fci.add_bar(x=top_cust_items["Description"].astype(str).str.slice(0, 28),
+                       y=top_cust_items["Revenue"], marker_color=SAND,
+                       hovertemplate="%{x}<br>RM %{y:,.0f}<extra></extra>")
+            fci.update_layout(height=340, margin=dict(t=10, b=10, l=0, r=0),
+                             plot_bgcolor="rgba(0,0,0,0)", xaxis_tickangle=-40)
+            fci.update_yaxes(gridcolor="#EDEFEF", title_text="Revenue RM")
+            st.plotly_chart(fci, use_container_width=True)
+            st.dataframe(
+                top_cust_items[["Item Code", "Description", "Qty", "Revenue", "Profit",
+                               "Margin %", "Transactions"]]
+                .style.format({"Qty": "{:,.0f}", "Revenue": "RM {:,.2f}",
+                              "Profit": "RM {:,.2f}", "Margin %": "{:.1f}%",
+                              "Transactions": "{:,.0f}"}),
+                use_container_width=True, hide_index=True)
+        else:
+            st.info("No item-level data for this customer in the current selection.")
 
 # ----------------------------------------------------------------------------
 # Compare
