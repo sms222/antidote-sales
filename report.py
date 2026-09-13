@@ -275,8 +275,7 @@ def build_pdf(
     filters_note="",
     staff=None,
     customers=None,
-    membership=None,
-    membership_caveat=False,
+
     sections=None,
 ):
     """Return PDF bytes. Any frame passed as None is skipped."""
@@ -446,41 +445,6 @@ def build_pdf(
         story.append(_table(
             ["Customer", "Revenue RM", "Profit RM", "Margin", "Transactions"],
             rows, [70 * mm, 30 * mm, 28 * mm, 20 * mm, 22 * mm]))
-
-    # --- Membership ---------------------------------------------------------
-    if sections.get("membership", True) and membership is not None and len(membership):
-        story.append(PageBreak())
-        story.append(Paragraph("Membership by month", st_["h2"]))
-        if membership_caveat:
-            story.append(Paragraph(
-                "The first month shown counts every named customer's first purchase "
-                "within this file as a 'new member'. Some may have joined before the "
-                "data starts — treat that month's recruitment figure as an upper "
-                "bound, not a fact.", st_["warn"]))
-
-        labels = [d.strftime("%b %Y") for d in membership["Month"]]
-        story.append(Image(
-            _dual_axis_png(labels, membership["NewMembers"].tolist(),
-                          membership["MemberTCperDay"].tolist(),
-                          "New members", "Member TC/day",
-                          bar_color=SAND_HEX, y1_label="New members",
-                          y2_label="TC / day"),
-            width=170 * mm, height=170 * mm * 0.30))
-        story.append(Spacer(1, 8))
-
-        rows = []
-        for _, r in membership.iterrows():
-            rows.append([
-                r["Month"].strftime("%b %Y"), _fmt_num(r["NewMembers"]),
-                _fmt_num(r["MemberTransactions"]), _fmt_num(r["MemberTCperDay"], 1),
-                _fmt_rm(r["MemberRevenue"]), _fmt_rm(r["MemberAvgBasket"]),
-            ])
-        story.append(_table(
-            ["Month", "New members", "Transactions", "TC/day", "Revenue RM", "Avg basket RM"],
-            rows, [26 * mm, 26 * mm, 26 * mm, 20 * mm, 28 * mm, 28 * mm]))
-        story.append(Paragraph(
-            "TC = transaction count. Recruitment month = calendar month of a "
-            "customer's first purchase found in the uploaded file.", st_["note"]))
 
     doc.build(story, onFirstPage=_page_decor, onLaterPages=_page_decor)
     buf.seek(0)

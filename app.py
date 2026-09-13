@@ -216,52 +216,6 @@ def customer_summary(frame: pd.DataFrame) -> pd.DataFrame:
     return out.sort_values("Profit", ascending=False)
 
 
-@st.cache_data(show_spinner=False)
-def membership_monthly(scoped_all_dates: pd.DataFrame, view_start, view_end) -> tuple:
-    """
-    Recruitment and member-activity by month.
-
-    First-purchase dates are computed from `scoped_all_dates` (respects every
-    filter except the date range) so a narrow date selection doesn't make a
-    long-standing customer look newly recruited. The returned table is then
-    limited to months touching the selected view window.
-
-    Returns (monthly_df, first_month_is_data_start: bool).
-    """
-    named = scoped_all_dates[scoped_all_dates["_member"]]
-    if named.empty:
-        return pd.DataFrame(), False
-
-    first_dt = named.groupby(COL["cust"])["_date"].min()
-    recruit_month = pd.to_datetime(first_dt).dt.to_period("M")
-    recruits = recruit_month.value_counts().sort_index()
-    recruits.index = recruits.index.to_timestamp()
-
-    m = named.copy()
-    m["_m"] = pd.to_datetime(m["_month"])
-    activity = m.groupby("_m").agg(
-        MemberRevenue=(COL["amount"], "sum"),
-        MemberTransactions=(COL["doc"], "nunique"),
-        MemberDays=("_date", "nunique"),
-    ).reset_index().rename(columns={"_m": "Month"})
-    activity["MemberTCperDay"] = activity["MemberTransactions"] / activity["MemberDays"]
-    activity["MemberAvgBasket"] = activity["MemberRevenue"] / activity["MemberTransactions"]
-
-    out = activity.merge(
-        recruits.rename("NewMembers"), left_on="Month", right_index=True, how="left")
-    out["NewMembers"] = out["NewMembers"].fillna(0).astype(int)
-    out = out.sort_values("Month")
-
-    view_start_m = pd.Timestamp(view_start).to_period("M").to_timestamp()
-    view_end_m = pd.Timestamp(view_end).to_period("M").to_timestamp()
-    out = out[(out["Month"] >= view_start_m) & (out["Month"] <= view_end_m)]
-
-    data_start_m = pd.to_datetime(scoped_all_dates["_date"]).min()
-    first_shown_is_start = (not out.empty) and (out["Month"].min() <= pd.Timestamp(data_start_m).to_period("M").to_timestamp())
-
-    return out, first_shown_is_start
-
-
 # ----------------------------------------------------------------------------
 # Sidebar — upload
 # ----------------------------------------------------------------------------
@@ -398,9 +352,6 @@ top_margin = gated.nlargest(int(top_n), "Margin %") if len(gated) else gated
 
 agents_tbl = agent_summary(df)
 customers_tbl = customer_summary(df)
-top_customers = customers_tbl.head(int(top_n)) if len(customers_tbl) else customers_tbl
-
-member_monthly, first_is_data_start = membership_monthly(scoped, start_d, end_d)
 
 # ----------------------------------------------------------------------------
 # Header
@@ -413,8 +364,8 @@ st.markdown(
     unsafe_allow_html=True)
 
 (tab_overview, tab_stock, tab_staff, tab_customers,
- tab_membership, tab_compare, tab_report) = st.tabs(
-    ["Overview", "Stock", "Staff", "Customers", "Membership", "Compare", "Report"])
+ tab_compare, tab_report) = st.tabs(
+    ["Overview", "Stock", "Staff", "Customers", "Compare", "Report"])
 
 # ----------------------------------------------------------------------------
 # Overview
@@ -612,8 +563,6 @@ with tab_staff:
 with tab_customers:
     m_rev = df[df["_member"]][COL["amount"]].sum()
     c_rev = df[~df["_member"]][COL["amount"]].sum()
-    m_tx = df[df["_member"]][COL["doc"]].nunique()
-    c_tx = df[~df["_member"]][COL["doc"]].nunique()
 
     cc = st.columns(4)
     cc[0].metric("Named-customer revenue", rm(m_rev))
@@ -631,64 +580,44 @@ with tab_customers:
     if customers_tbl.empty:
         st.info("No named-customer transactions in this selection — every line is CASH.")
     else:
-        st.subheader(f"Top {top_n} customers by profit")
-        st.caption("CASH transactions are excluded from this ranking by definition — "
-                   "there is no single customer behind that name.")
-        st.dataframe(
-            top_customers.style.format({
-                "Revenue": "RM {:,.2f}", "Profit": "RM {:,.2f}", "Margin %": "{:.1f}%",
-                "Avg basket": "RM {:,.2f}", "Transactions": "{:,.0f}", "Lines": "{:,.0f}"}),
-            use_container_width=True, hide_index=True)
-        st.download_button("Download CSV", top_customers.to_csv(index=False).encode(),
-                           f"top_{top_n}_customers_{start_d}_{end_d}.csv", "text/csv")
+        cust_top_n = st.number_input("Show top", 5, 500, 30, step=5, key="cust_top_n")
+        st.caption("CASH transactions are excluded from every ranking below by "
+                   "definition — there is no single customer behind that name.")
 
-# ----------------------------------------------------------------------------
-# Membership
-# ----------------------------------------------------------------------------
+        fmt_cust = {"Revenue": "RM {:,.2f}", "Profit": "RM {:,.2f}", "Margin %": "{:.1f}%",
+                   "Avg basket": "RM {:,.2f}", "Transactions": "{:,.0f}", "Lines": "{:,.0f}"}
+        cols_cust = ["Customer", "Revenue", "Profit", "Transactions", "Margin %", "Avg basket"]
 
-with tab_membership:
-    if member_monthly.empty:
-        st.info("No named-customer activity in this selection.")
-    else:
-        if first_is_data_start:
-            st.warning(
-                "The first month shown counts every named customer's first purchase "
-                "within this file as a 'new member' — some may have joined before the "
-                "data starts. Treat recruitment figures for that month as an upper "
-                "bound, not a fact.")
+        cu1, cu2, cu3 = st.tabs(["By profit", "By transactions", "By total sales"])
 
-        fm = make_subplots(specs=[[{"secondary_y": True}]])
-        fm.add_bar(x=member_monthly["Month"], y=member_monthly["NewMembers"],
-                   name="New members", marker_color=SAND,
-                   hovertemplate="%{x|%b %Y}<br>%{y:,.0f} new<extra></extra>")
-        fm.add_scatter(x=member_monthly["Month"], y=member_monthly["MemberTCperDay"],
-                       name="Member TC/day", mode="lines+markers",
-                       line=dict(color=TEAL, width=2), secondary_y=True,
-                       hovertemplate="%{x|%b %Y}<br>%{y:,.1f} tx/day<extra></extra>")
-        fm.update_layout(height=380, hovermode="x unified",
-                         legend=dict(orientation="h", y=1.12, x=0),
-                         margin=dict(t=20, b=10, l=0, r=0), plot_bgcolor="rgba(0,0,0,0)")
-        fm.update_yaxes(gridcolor="#EDEFEF", title_text="New members", secondary_y=False)
-        fm.update_yaxes(showgrid=False, title_text="TC / day", secondary_y=True)
-        st.plotly_chart(fm, use_container_width=True)
+        with cu1:
+            st.subheader(f"Top {cust_top_n} customers by profit")
+            t = customers_tbl.nlargest(int(cust_top_n), "Profit")
+            st.dataframe(t[cols_cust].style.format(fmt_cust),
+                         use_container_width=True, hide_index=True)
+            st.download_button("Download CSV", t.to_csv(index=False).encode(),
+                               f"top_{cust_top_n}_customers_profit_{start_d}_{end_d}.csv",
+                               "text/csv")
 
-        show_m = member_monthly.rename(columns={
-            "Month": "Month", "NewMembers": "New members",
-            "MemberRevenue": "Member revenue", "MemberTransactions": "Member transactions",
-            "MemberTCperDay": "Member TC/day", "MemberAvgBasket": "Member avg basket"})
-        show_m = show_m[["Month", "New members", "Member transactions", "Member TC/day",
-                         "Member revenue", "Member avg basket"]]
-        st.dataframe(
-            show_m.style.format({
-                "Month": lambda d: d.strftime("%b %Y"),
-                "New members": "{:,.0f}", "Member transactions": "{:,.0f}",
-                "Member TC/day": "{:,.1f}", "Member revenue": "RM {:,.2f}",
-                "Member avg basket": "RM {:,.2f}"}),
-            use_container_width=True, hide_index=True)
-        st.download_button("Download CSV", show_m.to_csv(index=False).encode(),
-                           f"membership_monthly_{start_d}_{end_d}.csv", "text/csv")
-        st.caption("Recruitment month = the calendar month of a customer's first "
-                   "purchase found in the uploaded file. TC = transaction count.")
+        with cu2:
+            st.subheader(f"Top {cust_top_n} customers by number of transactions")
+            st.caption("Transactions = unique Doc. No. — how many separate times this "
+                       "customer paid, not how many line items they bought.")
+            t = customers_tbl.nlargest(int(cust_top_n), "Transactions")
+            st.dataframe(t[cols_cust].style.format(fmt_cust),
+                         use_container_width=True, hide_index=True)
+            st.download_button("Download CSV", t.to_csv(index=False).encode(),
+                               f"top_{cust_top_n}_customers_transactions_{start_d}_{end_d}.csv",
+                               "text/csv")
+
+        with cu3:
+            st.subheader(f"Top {cust_top_n} customers by total sales")
+            t = customers_tbl.nlargest(int(cust_top_n), "Revenue")
+            st.dataframe(t[cols_cust].style.format(fmt_cust),
+                         use_container_width=True, hide_index=True)
+            st.download_button("Download CSV", t.to_csv(index=False).encode(),
+                               f"top_{cust_top_n}_customers_revenue_{start_d}_{end_d}.csv",
+                               "text/csv")
 
 # ----------------------------------------------------------------------------
 # Compare
@@ -770,28 +699,30 @@ with tab_compare:
 
         left, right = st.columns(2)
         with left:
+            st.markdown("**Revenue & profit**")
             figc = go.Figure()
             figc.add_bar(x=["Revenue", "Gross profit"], y=[ka["revenue"], ka["profit"]],
                         name="Period A", marker_color=TEAL)
             figc.add_bar(x=["Revenue", "Gross profit"], y=[kb["revenue"], kb["profit"]],
                         name="Period B", marker_color=SAND)
-            figc.update_layout(barmode="group", height=320, title="Revenue & profit",
-                              margin=dict(t=40, b=10, l=0, r=0),
+            figc.update_layout(barmode="group", height=320,
+                              margin=dict(t=30, b=10, l=0, r=0),
                               plot_bgcolor="rgba(0,0,0,0)",
-                              legend=dict(orientation="h", y=1.15, x=0))
+                              legend=dict(orientation="h", y=1.12, x=0))
             figc.update_yaxes(gridcolor="#EDEFEF", title_text="RM")
             st.plotly_chart(figc, use_container_width=True)
 
         with right:
+            st.markdown("**Margin & purchase per head**")
             figm = go.Figure()
             figm.add_bar(x=["Margin %", "PP (RM)"], y=[ka["margin"], ka["basket"]],
                         name="Period A", marker_color=TEAL)
             figm.add_bar(x=["Margin %", "PP (RM)"], y=[kb["margin"], kb["basket"]],
                         name="Period B", marker_color=SAND)
-            figm.update_layout(barmode="group", height=320, title="Margin & purchase per head",
-                              margin=dict(t=40, b=10, l=0, r=0),
+            figm.update_layout(barmode="group", height=320,
+                              margin=dict(t=30, b=10, l=0, r=0),
                               plot_bgcolor="rgba(0,0,0,0)",
-                              legend=dict(orientation="h", y=1.15, x=0))
+                              legend=dict(orientation="h", y=1.12, x=0))
             figm.update_yaxes(gridcolor="#EDEFEF")
             st.plotly_chart(figm, use_container_width=True)
 
@@ -857,8 +788,7 @@ with tab_report:
         sec_margin = st.checkbox(f"Top {top_n} by margin", True)
     with r3:
         sec_staff = st.checkbox("Staff performance", True)
-        sec_customers = st.checkbox(f"Top {top_n} customers", True)
-        sec_membership = st.checkbox("Membership by month", True)
+        sec_customers = st.checkbox(f"Top {cust_top_n} customers (by profit)", True)
 
     business = st.text_input("Business name on the report", BUSINESS)
 
@@ -882,13 +812,12 @@ with tab_report:
                     total_lines=len(df),
                     filters_note=filters_note,
                     staff=agents_tbl if sec_staff else None,
-                    customers=top_customers if sec_customers else None,
-                    membership=member_monthly if sec_membership else None,
-                    membership_caveat=first_is_data_start,
+                    customers=(customers_tbl.nlargest(int(cust_top_n), "Profit")
+                              if sec_customers and len(customers_tbl) else None),
                     sections={"summary": sec_summary, "trend": sec_trend,
                               "stock_qty": sec_qty, "stock_rev": sec_rev,
                               "stock_margin": sec_margin, "staff": sec_staff,
-                              "customers": sec_customers, "membership": sec_membership},
+                              "customers": sec_customers},
                 )
             except Exception as exc:
                 st.error(f"The report could not be built. {exc}")
