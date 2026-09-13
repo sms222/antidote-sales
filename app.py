@@ -62,13 +62,7 @@ REQUIRED = [COL["doc"], COL["qty"], COL["amount"], COL["totalcost"], COL["profit
 @st.cache_data(show_spinner="Reading the export…", max_entries=2)
 def load_data(file_bytes: bytes, filename: str) -> pd.DataFrame:
     buf = io.BytesIO(file_bytes)
-    low = filename.lower()
-    if low.endswith(".csv"):
-        df = pd.read_csv(buf)
-    elif low.endswith(".parquet"):
-        df = pd.read_parquet(buf)
-    else:
-        df = pd.read_excel(buf)
+    df = pd.read_excel(buf)
 
     df.columns = [str(c).strip() for c in df.columns]
 
@@ -96,7 +90,6 @@ def load_data(file_bytes: bytes, filename: str) -> pd.DataFrame:
     df["_quarter_label"] = ts.dt.to_period("Q").astype(str).str.replace("Q", " Q")
     df["_year"] = ts.dt.to_period("Y").dt.start_time.dt.date
     df["_year_label"] = ts.dt.strftime("%Y")
-    df["_doctype"] = df[COL["doc"]].astype(str).str.extract(r"^([A-Za-z]+)")[0].fillna("-")
     df["_no_cost"] = df[COL["totalcost"]] == 0
     if COL["cust"] in df.columns:
         df["_member"] = df[COL["cust"]].astype(str).str.strip().str.upper() != "CASH"
@@ -313,27 +306,16 @@ def customer_summary(frame: pd.DataFrame) -> pd.DataFrame:
 
 with st.sidebar:
     st.markdown("### Sales data")
-    upload = st.file_uploader("POS export", type=["xlsx", "xls", "csv", "parquet"],
+    upload = st.file_uploader("POS export (.xlsx)", type=["xlsx"],
                               label_visibility="collapsed")
     st.markdown(
         '<p class="caption-note">Nothing is saved. The file lives in this browser '
         'session only and disappears when you close the tab.</p>',
         unsafe_allow_html=True)
 
-    st.markdown("### Item master")
-    item_master_upload = st.file_uploader(
-        "Replace the item master for this session",
-        type=["csv", "xlsx", "xls"], key="item_master_upload",
-        help="Needs 'Item Code' and 'Item Group' columns. Optional — a bundled "
-             "copy loads automatically otherwise.")
-
 try:
-    if item_master_upload is not None:
-        item_master = load_item_master(item_master_upload.getvalue(), item_master_upload.name)
-        im_source = f"uploaded ({item_master_upload.name})"
-    else:
-        item_master = load_item_master()
-        im_source = "bundled with the app" if len(item_master) else "none found"
+    item_master = load_item_master()
+    im_source = "bundled with the app" if len(item_master) else "none found"
 except Exception as exc:
     st.sidebar.error(f"Item master could not be read: {exc}")
     item_master = pd.DataFrame(columns=["Item Code", "Item Group"])
@@ -345,9 +327,8 @@ with st.sidebar:
 if upload is None:
     st.title("Sales Analytics")
     st.markdown(
-        "Upload a POS sales listing to begin. Every figure is calculated from the "
-        "file as exported — no values are adjusted, filled in, or removed.\n\n"
-        "Large exports load faster as Parquet than as Excel.")
+        "Upload your POS sales listing (.xlsx) to begin. Every figure is calculated "
+        "from the file as exported — no values are adjusted, filled in, or removed.")
     st.stop()
 
 try:
@@ -380,16 +361,35 @@ with st.sidebar:
     else:
         start_d = end_d = date_sel[0] if isinstance(date_sel, tuple) else date_sel
 
-    grain = st.radio("Group by", ["Daily", "Weekly", "Monthly", "Quarterly", "Annually"],
-                     index=0, horizontal=True)
+    # Only offer a granularity if the selected range actually spans more than
+    # one such period — "Annually" on 13 days of data would show a single
+    # bar, which isn't a trend, it's just the total relabeled.
+    _in_range = raw[(raw["_date"] >= start_d) & (raw["_date"] <= end_d)]
+    grain_options = ["Daily"]
+    if _in_range["_week"].nunique() >= 2:
+        grain_options.append("Weekly")
+    if _in_range["_month"].nunique() >= 2:
+        grain_options.append("Monthly")
+    if _in_range["_quarter"].nunique() >= 2:
+        grain_options.append("Quarterly")
+    if _in_range["_year"].nunique() >= 2:
+        grain_options.append("Annually")
+
+    prior_grain = st.session_state.get("grain_pref", "Daily")
+    grain_index = grain_options.index(prior_grain) if prior_grain in grain_options else 0
+    grain = st.radio("Group by", grain_options, index=grain_index, horizontal=True)
+    st.session_state["grain_pref"] = grain
+
+    _hidden = [g for g in ["Daily", "Weekly", "Monthly", "Quarterly", "Annually"]
+              if g not in grain_options]
+    if _hidden:
+        st.caption(f"{', '.join(_hidden)} hidden — the selected range doesn't "
+                   f"cover more than one such period yet.")
 
     st.markdown("### Filters")
     agents = sorted(raw[COL["agent"]].dropna().unique().tolist()) if COL["agent"] in raw else []
     agent_sel = st.multiselect("Sales agent", agents,
                                help="Blank agent rows are included unless you filter here.")
-
-    doctypes = sorted(raw["_doctype"].unique().tolist())
-    doc_sel = st.multiselect("Document type", doctypes, default=doctypes)
 
     cust_scope = st.radio("Customer", ["All", "Members only", "Non-members (CASH)"],
                           help="CASH means no member was recorded at point of sale.")
@@ -418,8 +418,6 @@ def apply_non_date(df):
     out = df
     if agent_sel:
         out = out[out[COL["agent"]].isin(agent_sel)]
-    if doc_sel:
-        out = out[out["_doctype"].isin(doc_sel)]
     if cust_scope == "Members only" and "_member" in out:
         out = out[out["_member"]]
     elif cust_scope == "Non-members (CASH)" and "_member" in out:
@@ -446,7 +444,6 @@ period_label = f"{start_d:%d %b %Y} – {end_d:%d %b %Y}"
 
 filters_note = ", ".join(filter(None, [
     f"agents: {', '.join(agent_sel)}" if agent_sel else "",
-    f"document types: {', '.join(doc_sel)}" if len(doc_sel) != len(doctypes) else "",
     f"customer: {cust_scope}" if cust_scope != "All" else "",
     f"item contains '{search.strip()}'" if search.strip() else "",
 ])) or "none"
