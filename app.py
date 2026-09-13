@@ -712,14 +712,23 @@ with tab_compare:
         a_sel = st.date_input("Period A range", value=(start_d, end_d),
                               min_value=min_d, max_value=max_d, key="cmp_a",
                               label_visibility="collapsed")
+    # Default Period B to "the period immediately before A", clamped into the
+    # data's actual date range — the unclamped previous period may fall
+    # entirely before the earliest date on file (e.g. when A already spans
+    # the whole file), which Streamlit's date_input rejects outright.
+    b_default_start = min(max(prev_start.date(), min_d), max_d)
+    b_default_end = min(max(prev_end.date(), min_d), max_d)
+    if b_default_start > b_default_end:
+        b_default_start = b_default_end
+
     with cb:
         st.markdown("**Period B**")
-        b_sel = st.date_input("Period B range", value=(prev_start.date(), prev_end.date()),
+        b_sel = st.date_input("Period B range", value=(b_default_start, b_default_end),
                               min_value=min_d, max_value=max_d, key="cmp_b",
                               label_visibility="collapsed")
 
     a_start, a_end = _resolve_range(a_sel, (start_d, end_d))
-    b_start, b_end = _resolve_range(b_sel, (prev_start.date(), prev_end.date()))
+    b_start, b_end = _resolve_range(b_sel, (b_default_start, b_default_end))
 
     frame_a = scoped[(scoped["_date"] >= a_start) & (scoped["_date"] <= a_end)]
     frame_b = scoped[(scoped["_date"] >= b_start) & (scoped["_date"] <= b_end)]
