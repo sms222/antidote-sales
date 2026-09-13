@@ -273,6 +273,7 @@ def build_pdf(
     no_cost_lines=0,
     total_lines=0,
     filters_note="",
+    groups=None,
     staff=None,
     customers=None,
 
@@ -394,6 +395,35 @@ def build_pdf(
             note += (f"Items below RM {margin_floor:,.0f} revenue are excluded, so that "
                      f"single-unit sales and uncosted lines do not dominate the ranking.")
         _stock_block(stock_margin, f"Top {len(stock_margin)} items by margin", None, note)
+
+    # --- Item groups ---------------------------------------------------------
+    if sections.get("groups", True) and groups is not None and len(groups):
+        story.append(PageBreak())
+        story.append(Paragraph("Item groups", st_["h2"]))
+
+        unclassified = groups[groups["Item Group"] == "Unclassified"]
+        if not unclassified.empty and unclassified["Revenue"].iloc[0] > 0:
+            share = unclassified["Revenue"].iloc[0] / groups["Revenue"].sum() * 100
+            story.append(Paragraph(
+                f"RM {unclassified['Revenue'].iloc[0]:,.0f} of revenue ({share:.1f}%) "
+                f"comes from item codes not found in the item master.", st_["warn"]))
+
+        story.append(Image(
+            _bar_png(groups["Item Group"].tolist(), groups["Revenue"].tolist(),
+                    color=TEAL_HEX, ylabel="Revenue (RM)"),
+            width=170 * mm, height=170 * mm * 0.28))
+        story.append(Spacer(1, 8))
+
+        rows = []
+        for _, r in groups.iterrows():
+            rows.append([
+                str(r["Item Group"])[:30], _fmt_num(r["Qty"]), _fmt_rm(r["Revenue"]),
+                _fmt_rm(r["Profit"]), f"{_fmt_num(r['Margin %'], 1)}%",
+                _fmt_num(r["Transactions"]),
+            ])
+        story.append(_table(
+            ["Item Group", "Qty", "Revenue RM", "Profit RM", "Margin", "Transactions"],
+            rows, [42 * mm, 18 * mm, 28 * mm, 26 * mm, 18 * mm, 26 * mm]))
 
     # --- Staff ---------------------------------------------------------
     if sections.get("staff", True) and staff is not None and len(staff):

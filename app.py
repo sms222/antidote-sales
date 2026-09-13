@@ -10,6 +10,7 @@ Design rules
 """
 
 import io
+import os
 
 import numpy as np
 import pandas as pd
@@ -104,6 +105,36 @@ def load_data(file_bytes: bytes, filename: str) -> pd.DataFrame:
     return df
 
 
+ITEM_MASTER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "item_master.csv")
+
+
+@st.cache_data(show_spinner=False)
+def load_item_master(file_bytes=None, filename=None) -> pd.DataFrame:
+    """
+    Item Code -> Item Group lookup.
+
+    Loads the copy bundled in the repo (item_master.csv) by default, so the
+    person never has to re-upload it. If a file is passed (a session-only
+    override from the sidebar), that takes priority instead.
+    """
+    if file_bytes is not None:
+        buf = io.BytesIO(file_bytes)
+        low = (filename or "").lower()
+        im = pd.read_csv(buf) if low.endswith(".csv") else pd.read_excel(buf)
+    elif os.path.exists(ITEM_MASTER_PATH):
+        im = pd.read_csv(ITEM_MASTER_PATH)
+    else:
+        return pd.DataFrame(columns=["Item Code", "Item Group"])
+
+    im.columns = [str(c).strip() for c in im.columns]
+    needed = {"Item Code", "Item Group"}
+    if not needed.issubset(im.columns):
+        raise ValueError("Item master must have 'Item Code' and 'Item Group' columns.")
+    im["Item Code"] = im["Item Code"].astype(str).str.strip()
+    im["Item Group"] = im["Item Group"].astype(str).str.strip()
+    return im[["Item Code", "Item Group"]].drop_duplicates(subset="Item Code")
+
+
 def rm(x, dp=0):
     return "—" if pd.isna(x) else f"RM {x:,.{dp}f}"
 
@@ -161,12 +192,16 @@ def build_trend(frame: pd.DataFrame, key: str, sort_key: str, exclude_no_cost: b
 
 @st.cache_data(show_spinner=False)
 def item_summary(frame: pd.DataFrame, exclude_no_cost: bool) -> pd.DataFrame:
-    """One row per product, from the filtered frame."""
+    """One row per product, from the filtered frame. Carries Item Group if present."""
     src = frame[~frame["_no_cost"]] if exclude_no_cost else frame
     if src.empty:
         return pd.DataFrame()
 
-    g = src.groupby([COL["item"], COL["desc"]], dropna=False)
+    group_cols = [COL["item"], COL["desc"]]
+    if "_item_group" in src.columns:
+        group_cols.append("_item_group")
+
+    g = src.groupby(group_cols, dropna=False)
     out = g.agg(
         Qty=(COL["qty"], "sum"),
         Revenue=(COL["amount"], "sum"),
@@ -177,8 +212,31 @@ def item_summary(frame: pd.DataFrame, exclude_no_cost: bool) -> pd.DataFrame:
     ).reset_index()
     out["Margin %"] = np.where(out["Revenue"] != 0,
                                out["Profit"] / out["Revenue"] * 100, np.nan)
-    out = out.rename(columns={COL["item"]: "Item Code", COL["desc"]: "Description"})
+    rename = {COL["item"]: "Item Code", COL["desc"]: "Description"}
+    if "_item_group" in src.columns:
+        rename["_item_group"] = "Item Group"
+    out = out.rename(columns=rename)
     return out
+
+
+@st.cache_data(show_spinner=False)
+def group_summary(frame: pd.DataFrame, exclude_no_cost: bool) -> pd.DataFrame:
+    """One row per Item Group."""
+    if "_item_group" not in frame.columns or frame.empty:
+        return pd.DataFrame()
+    src = frame[~frame["_no_cost"]] if exclude_no_cost else frame
+    if src.empty:
+        return pd.DataFrame()
+
+    out = src.groupby("_item_group").agg(
+        Qty=(COL["qty"], "sum"),
+        Revenue=(COL["amount"], "sum"),
+        Profit=(COL["profit"], "sum"),
+        Transactions=(COL["doc"], "nunique"),
+        Items=(COL["item"], "nunique"),
+    ).reset_index().rename(columns={"_item_group": "Item Group"})
+    out["Margin %"] = np.where(out["Revenue"] != 0, out["Profit"] / out["Revenue"] * 100, np.nan)
+    return out.sort_values("Revenue", ascending=False)
 
 
 @st.cache_data(show_spinner=False)
@@ -229,6 +287,34 @@ with st.sidebar:
         'session only and disappears when you close the tab.</p>',
         unsafe_allow_html=True)
 
+    st.markdown("### Item master")
+    item_master_upload = st.file_uploader(
+        "Replace the item master for this session",
+        type=["csv", "xlsx", "xls"], key="item_master_upload",
+        help="Needs 'Item Code' and 'Item Group' columns. Optional — a bundled "
+             "copy loads automatically otherwise.")
+
+try:
+    if item_master_upload is not None:
+        item_master = load_item_master(item_master_upload.getvalue(), item_master_upload.name)
+        im_source = f"uploaded ({item_master_upload.name})"
+    else:
+        item_master = load_item_master()
+        im_source = "bundled with the app" if len(item_master) else "none found"
+except Exception as exc:
+    st.sidebar.error(f"Item master could not be read: {exc}")
+    item_master = pd.DataFrame(columns=["Item Code", "Item Group"])
+    im_source = "failed to load"
+
+with st.sidebar:
+    st.caption(f"{len(item_master):,} item codes loaded ({im_source}).")
+    if len(item_master):
+        st.download_button(
+            "Download current item master (CSV)",
+            item_master.to_csv(index=False).encode(), "item_master.csv", "text/csv",
+            help="To make an uploaded update permanent, replace item_master.csv "
+                 "in the GitHub repo with this file.")
+
 if upload is None:
     st.title("Sales Analytics")
     st.markdown(
@@ -242,6 +328,14 @@ try:
 except Exception as exc:
     st.error(f"That file could not be read. {exc}")
     st.stop()
+
+if len(item_master):
+    raw = raw.merge(item_master.rename(columns={"Item Code": COL["item"]}),
+                    on=COL["item"], how="left")
+    raw = raw.rename(columns={"Item Group": "_item_group"})
+    raw["_item_group"] = raw["_item_group"].fillna("Unclassified")
+else:
+    raw["_item_group"] = "Unclassified"
 
 # ----------------------------------------------------------------------------
 # Sidebar — filters
@@ -352,6 +446,7 @@ top_margin = gated.nlargest(int(top_n), "Margin %") if len(gated) else gated
 
 agents_tbl = agent_summary(df)
 customers_tbl = customer_summary(df)
+groups_tbl = group_summary(df, exclude_no_cost)
 
 # ----------------------------------------------------------------------------
 # Header
@@ -363,9 +458,9 @@ st.markdown(
     f"{len(df):,} lines &nbsp;·&nbsp; {df[COL['doc']].nunique():,} transactions</p>",
     unsafe_allow_html=True)
 
-(tab_overview, tab_stock, tab_staff, tab_customers,
+(tab_overview, tab_stock, tab_groups, tab_staff, tab_customers,
  tab_compare, tab_report) = st.tabs(
-    ["Overview", "Stock", "Staff", "Customers", "Compare", "Report"])
+    ["Overview", "Stock", "Item Groups", "Staff", "Customers", "Compare", "Report"])
 
 # ----------------------------------------------------------------------------
 # Overview
@@ -514,6 +609,58 @@ with tab_stock:
                          use_container_width=True, hide_index=True)
             st.download_button("Download CSV", top_margin.to_csv(index=False).encode(),
                                f"top_{top_n}_margin_{start_d}_{end_d}.csv", "text/csv")
+
+# ----------------------------------------------------------------------------
+# Item Groups
+# ----------------------------------------------------------------------------
+
+with tab_groups:
+    if groups_tbl.empty:
+        st.info("No item group data available. Check the item master in the sidebar.")
+    else:
+        unclassified = groups_tbl[groups_tbl["Item Group"] == "Unclassified"]
+        if not unclassified.empty and unclassified["Revenue"].iloc[0] > 0:
+            share = unclassified["Revenue"].iloc[0] / groups_tbl["Revenue"].sum() * 100
+            st.warning(
+                f"RM {unclassified['Revenue'].iloc[0]:,.0f} of revenue ({share:.1f}%) "
+                f"comes from item codes not found in the item master — new products, "
+                f"typos, or codes retired since the master was last updated.")
+
+        fg = go.Figure()
+        fg.add_bar(x=groups_tbl["Item Group"], y=groups_tbl["Revenue"], name="Revenue",
+                   marker_color=TEAL, hovertemplate="%{x}<br>RM %{y:,.0f}<extra></extra>")
+        fg.add_bar(x=groups_tbl["Item Group"], y=groups_tbl["Profit"], name="Gross profit",
+                   marker_color=SAND, hovertemplate="%{x}<br>RM %{y:,.0f}<extra></extra>")
+        fg.update_layout(barmode="group", height=380, margin=dict(t=10, b=10, l=0, r=0),
+                         plot_bgcolor="rgba(0,0,0,0)", xaxis_tickangle=-30,
+                         legend=dict(orientation="h", y=1.1, x=0))
+        fg.update_yaxes(gridcolor="#EDEFEF", title_text="RM")
+        st.plotly_chart(fg, use_container_width=True)
+
+        st.dataframe(
+            groups_tbl.style.format({
+                "Qty": "{:,.0f}", "Revenue": "RM {:,.2f}", "Profit": "RM {:,.2f}",
+                "Margin %": "{:.1f}%", "Transactions": "{:,.0f}", "Items": "{:,.0f}"}),
+            use_container_width=True, hide_index=True)
+        st.download_button("Download CSV", groups_tbl.to_csv(index=False).encode(),
+                           f"item_groups_{start_d}_{end_d}.csv", "text/csv")
+
+        st.divider()
+        st.subheader("Drill into a group")
+        pick = st.selectbox("Item Group", groups_tbl["Item Group"].tolist())
+        drill = items[items["Item Group"] == pick] if len(items) else pd.DataFrame()
+        if len(drill):
+            drill_top = drill.nlargest(min(20, len(drill)), "Profit")
+            st.caption(f"Top {len(drill_top)} items in '{pick}' by profit, out of "
+                       f"{len(drill)} distinct items sold in this group.")
+            st.dataframe(
+                drill_top[["Item Code", "Description", "Qty", "Revenue", "Profit",
+                          "Margin %", "Transactions"]].style.format({
+                    "Qty": "{:,.0f}", "Revenue": "RM {:,.2f}", "Profit": "RM {:,.2f}",
+                    "Margin %": "{:.1f}%", "Transactions": "{:,.0f}"}),
+                use_container_width=True, hide_index=True)
+        else:
+            st.info("No items in this group for the current selection.")
 
 # ----------------------------------------------------------------------------
 # Staff
@@ -787,6 +934,7 @@ with tab_report:
         sec_rev = st.checkbox(f"Top {top_n} by revenue", True)
         sec_margin = st.checkbox(f"Top {top_n} by margin", True)
     with r3:
+        sec_groups = st.checkbox("Item groups", True)
         sec_staff = st.checkbox("Staff performance", True)
         sec_customers = st.checkbox(f"Top {cust_top_n} customers (by profit)", True)
 
@@ -811,13 +959,14 @@ with tab_report:
                     no_cost_lines=int(df["_no_cost"].sum()),
                     total_lines=len(df),
                     filters_note=filters_note,
+                    groups=groups_tbl if sec_groups and len(groups_tbl) else None,
                     staff=agents_tbl if sec_staff else None,
                     customers=(customers_tbl.nlargest(int(cust_top_n), "Profit")
                               if sec_customers and len(customers_tbl) else None),
                     sections={"summary": sec_summary, "trend": sec_trend,
                               "stock_qty": sec_qty, "stock_rev": sec_rev,
-                              "stock_margin": sec_margin, "staff": sec_staff,
-                              "customers": sec_customers},
+                              "stock_margin": sec_margin, "groups": sec_groups,
+                              "staff": sec_staff, "customers": sec_customers},
                 )
             except Exception as exc:
                 st.error(f"The report could not be built. {exc}")
