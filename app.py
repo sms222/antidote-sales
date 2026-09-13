@@ -104,6 +104,15 @@ def load_data(file_bytes: bytes, filename: str) -> pd.DataFrame:
     if ts.isna().all():
         raise ValueError("Dates could not be read.")
 
+    n_bad = int(ts.isna().sum())
+    if n_bad:
+        st.warning(
+            f"{n_bad:,} row(s) had a date that couldn't be read and were left out "
+            f"of the analysis — usually a blank or non-standard date in the export.")
+        keep = ts.notna()
+        df = df.loc[keep].reset_index(drop=True)
+        ts = ts.loc[keep].reset_index(drop=True)
+
     df["_ts"] = ts
     df["_date"] = ts.dt.date
     df["_hour"] = ts.dt.hour
