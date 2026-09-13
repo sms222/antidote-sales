@@ -359,7 +359,7 @@ scoped = apply_non_date(raw)
 df = scoped[(scoped["_date"] >= start_d) & (scoped["_date"] <= end_d)]
 
 span = (end_d - start_d).days + 1
-prev_end = start_d - pd.Timedelta(days=1)
+prev_end = pd.Timestamp(start_d) - pd.Timedelta(days=1)
 prev_start = prev_end - pd.Timedelta(days=span - 1)
 prev = scoped[(scoped["_date"] >= prev_start.date()) & (scoped["_date"] <= prev_end.date())]
 
