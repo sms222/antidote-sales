@@ -190,6 +190,39 @@ def build_trend(frame: pd.DataFrame, key: str, sort_key: str, exclude_no_cost: b
     return t
 
 
+def multi_entity_trend(frame: pd.DataFrame, entity_col: str, entities: list,
+                       key: str, sort_key: str, value_col: str) -> pd.DataFrame:
+    """
+    Period-by-period totals for a handful of named entities (top items, top
+    agents, top customers) — what makes the 'Group by' granularity mean
+    something on the Stock, Staff, and Customers tabs, not just Overview.
+    Returns a wide frame: index = period label, one column per entity.
+    """
+    f = frame[frame[entity_col].isin(entities)]
+    if f.empty:
+        return pd.DataFrame()
+    group_cols = [key, entity_col] if key == sort_key else [sort_key, key, entity_col]
+    g = f.groupby(group_cols)[value_col].sum().reset_index()
+    sort_cols = [key] if key == sort_key else [sort_key, key]
+    order = g[sort_cols].drop_duplicates().sort_values(sort_cols[0])[key].tolist()
+    pivot = g.pivot(index=key, columns=entity_col, values=value_col)
+    pivot = pivot.reindex(order).fillna(0)
+    return pivot
+
+
+def plot_entity_trend(pivot: pd.DataFrame, ylabel: str):
+    fig = go.Figure()
+    palette = [TEAL, SAND, CLAY, "#4A7A78", "#C9A66B", "#7A9E9C", "#8C5A45"]
+    for i, col in enumerate(pivot.columns):
+        fig.add_scatter(x=pivot.index, y=pivot[col], mode="lines+markers",
+                        name=str(col)[:26], line=dict(color=palette[i % len(palette)], width=2))
+    fig.update_layout(height=340, margin=dict(t=10, b=10, l=0, r=0),
+                      plot_bgcolor="rgba(0,0,0,0)", hovermode="x unified",
+                      legend=dict(orientation="h", y=1.15, x=0))
+    fig.update_yaxes(gridcolor="#EDEFEF", title_text=ylabel)
+    return fig
+
+
 @st.cache_data(show_spinner=False)
 def item_summary(frame: pd.DataFrame, exclude_no_cost: bool) -> pd.DataFrame:
     """One row per product, from the filtered frame. Carries Item Group if present."""
@@ -308,12 +341,6 @@ except Exception as exc:
 
 with st.sidebar:
     st.caption(f"{len(item_master):,} item codes loaded ({im_source}).")
-    if len(item_master):
-        st.download_button(
-            "Download current item master (CSV)",
-            item_master.to_csv(index=False).encode(), "item_master.csv", "text/csv",
-            help="To make an uploaded update permanent, replace item_master.csv "
-                 "in the GitHub repo with this file.")
 
 if upload is None:
     st.title("Sales Analytics")
@@ -565,6 +592,16 @@ with tab_stock:
     if items.empty:
         st.warning("No product rows in this selection.")
     else:
+        top6_items = top_rev["Description"].head(6).tolist() if len(top_rev) else []
+        if top6_items:
+            st.subheader(f"{grain} revenue trend — top 6 items by revenue")
+            pv = multi_entity_trend(df, COL["desc"], top6_items, key, sort_key, COL["amount"])
+            if len(pv):
+                st.plotly_chart(plot_entity_trend(pv, "Revenue RM"), use_container_width=True)
+            st.caption("Change 'Group by' in the sidebar to see these at a different "
+                       "granularity.")
+            st.divider()
+
         s1, s2, s3 = st.tabs(["By quantity", "By revenue", "By margin"])
         fmt = {"Revenue": "RM {:,.2f}", "Profit": "RM {:,.2f}", "Margin %": "{:.1f}%",
                "Qty": "{:,.0f}", "Transactions": "{:,.0f}", "Lines": "{:,.0f}",
@@ -703,6 +740,17 @@ with tab_staff:
         st.download_button("Download CSV", agents_tbl.to_csv(index=False).encode(),
                            f"staff_performance_{start_d}_{end_d}.csv", "text/csv")
 
+        st.divider()
+        top6_agents = agents_tbl["Sales Agent"].head(6).tolist()
+        st.subheader(f"{grain} revenue trend — top 6 agents")
+        df_agent = df.copy()
+        df_agent["_agent_filled"] = df_agent[COL["agent"]].fillna("Not recorded")
+        pv = multi_entity_trend(df_agent, "_agent_filled", top6_agents, key, sort_key,
+                                COL["amount"])
+        if len(pv):
+            st.plotly_chart(plot_entity_trend(pv, "Revenue RM"), use_container_width=True)
+        st.caption("Change 'Group by' in the sidebar to see this at a different granularity.")
+
 # ----------------------------------------------------------------------------
 # Customers
 # ----------------------------------------------------------------------------
@@ -765,6 +813,15 @@ with tab_customers:
             st.download_button("Download CSV", t.to_csv(index=False).encode(),
                                f"top_{cust_top_n}_customers_revenue_{start_d}_{end_d}.csv",
                                "text/csv")
+
+        st.divider()
+        top6_cust = customers_tbl.nlargest(6, "Profit")["Customer"].tolist()
+        st.subheader(f"{grain} revenue trend — top 6 customers by profit")
+        pv = multi_entity_trend(df[df["_member"]], COL["cust"], top6_cust, key, sort_key,
+                                COL["amount"])
+        if len(pv):
+            st.plotly_chart(plot_entity_trend(pv, "Revenue RM"), use_container_width=True)
+        st.caption("Change 'Group by' in the sidebar to see this at a different granularity.")
 
 # ----------------------------------------------------------------------------
 # Compare
