@@ -25,7 +25,7 @@ from report import build_pdf
 # ----------------------------------------------------------------------------
 
 st.set_page_config(page_title="Sales Analytics", page_icon="▦",
-                   layout="wide", initial_sidebar_state="expanded")
+                   layout="wide", initial_sidebar_state="auto")
 
 INK, TEAL, SAND, CLAY, MUTED = "#16302F", "#0E7C7B", "#B8935A", "#A6452E", "#6B7C7B"
 
@@ -47,6 +47,20 @@ st.markdown(
       [data-testid="stNumberInput"] button {{
         background-color: #FFF3B0 !important;
         border: 1.5px solid #E0B800 !important;
+      }}
+
+      /* Mobile: two metrics per row instead of one, so the KPI strip at the
+         top of a tab doesn't push every chart below the fold. */
+      @media (max-width: 640px) {{
+        .block-container {{ padding-top: 1.2rem; padding-left: 0.8rem; padding-right: 0.8rem; }}
+        [data-testid="stHorizontalBlock"] {{ flex-wrap: wrap !important; }}
+        [data-testid="stHorizontalBlock"] > div {{
+          flex: 1 1 46% !important;
+          min-width: 46% !important;
+        }}
+        [data-testid="stMetricValue"] {{ font-size: 1.15rem; }}
+        [data-testid="stMetricLabel"] {{ font-size: 0.78rem; }}
+        button[data-baseweb="tab"] {{ padding: 6px 10px !important; font-size: 0.85rem !important; }}
       }}
     </style>
     """,
