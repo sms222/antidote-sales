@@ -84,8 +84,9 @@ def load_data(file_bytes: bytes, filename: str) -> pd.DataFrame:
     df["_hour"] = ts.dt.hour
     df["_weekday"] = ts.dt.day_name()
     df["_week"] = ts.dt.to_period("W").dt.start_time.dt.date
+    df["_week_label"] = ts.dt.strftime("%G-W%V")
     df["_month"] = ts.dt.to_period("M").dt.start_time.dt.date
-    df["_month_label"] = ts.dt.strftime("%b %Y")
+    df["_month_label"] = ts.dt.strftime("%Y-%m")
     df["_quarter"] = ts.dt.to_period("Q").dt.start_time.dt.date
     df["_quarter_label"] = ts.dt.to_period("Q").astype(str).str.replace("Q", " Q")
     df["_year"] = ts.dt.to_period("Y").dt.start_time.dt.date
@@ -452,7 +453,7 @@ filters_note = ", ".join(filter(None, [
 # Shared computations
 # ----------------------------------------------------------------------------
 
-GRAIN_KEY = {"Daily": "_date", "Weekly": "_week", "Monthly": "_month_label",
+GRAIN_KEY = {"Daily": "_date", "Weekly": "_week_label", "Monthly": "_month_label",
             "Quarterly": "_quarter_label", "Annually": "_year_label"}
 GRAIN_SORT = {"Daily": "_date", "Weekly": "_week", "Monthly": "_month",
              "Quarterly": "_quarter", "Annually": "_year"}
@@ -769,6 +770,7 @@ with tab_customers:
 
     st.divider()
 
+    cust_top_n = 30
     if customers_tbl.empty:
         st.info("No named-customer transactions in this selection — every line is CASH.")
     else:
