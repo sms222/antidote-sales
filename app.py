@@ -438,11 +438,11 @@ _item_options = [f"{c} — {d}" for c, d in
 with st.sidebar:
     st.markdown("### Exclude items")
     exclude_sel = st.multiselect(
-        "Search and select items to exclude", _item_options, key="exclude_items",
+        "Search and select items to exclude", _item_options, key="exclude_items_ms",
         placeholder="Type a code or description to search…",
-        help="Matches live as you type, against both item code and "
-             "description. Selected items are removed from every tab and "
-             "the report.")
+        help="Type to search, click a match to add it — pick as many as you "
+             "like. Click the × on a chip to remove it. Selected items are "
+             "removed from every tab and the report.")
 
 if exclude_sel:
     exclude_codes = {s.split(" — ", 1)[0] for s in exclude_sel}
