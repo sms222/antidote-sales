@@ -40,7 +40,8 @@ st.markdown(
 
       /* Yellow = you can type or change this value */
       [data-testid="stNumberInput"] input,
-      [data-testid="stTextInput"] input {{
+      [data-testid="stTextInput"] input,
+      [data-testid="stTextArea"] textarea {{
         background-color: #FFF3B0 !important;
         border: 1.5px solid #E0B800 !important;
       }}
@@ -422,6 +423,40 @@ if len(item_master):
     raw["_item_group"] = raw["_item_group"].fillna("Unclassified")
 else:
     raw["_item_group"] = "Unclassified"
+
+# ----------------------------------------------------------------------------
+# Excluded items — a manual data-cleaning step, applied before anything else
+# touches the data, so date range, filter lists, and every tab all reflect
+# the cleaned set consistently.
+# ----------------------------------------------------------------------------
+
+with st.sidebar:
+    st.markdown("### Exclude items")
+    exclude_raw = st.text_area(
+        "One item code or description per line",
+        value="", height=90, key="exclude_items",
+        placeholder="e.g.\nPI0002\nTransportation\nRounding",
+        help="Each line matches an exact Item Code, or any item whose "
+             "Description contains that text (not case-sensitive). Matching "
+             "rows are removed from every tab and the report.")
+
+exclude_terms = [t.strip() for t in exclude_raw.splitlines() if t.strip()]
+if exclude_terms:
+    codes_upper = raw[COL["item"]].astype(str).str.upper()
+    desc_upper = raw[COL["desc"]].astype(str).str.upper()
+    mask = pd.Series(False, index=raw.index)
+    for term in exclude_terms:
+        t = term.upper()
+        mask |= (codes_upper == t) | desc_upper.str.contains(t, regex=False, na=False)
+    n_excluded = int(mask.sum())
+    if n_excluded:
+        with st.sidebar:
+            st.caption(f"{n_excluded:,} line(s) excluded "
+                      f"(RM {raw.loc[mask, COL['amount']].sum():,.0f} revenue).")
+        raw = raw.loc[~mask].reset_index(drop=True)
+    if raw.empty:
+        st.error("Every row was excluded — loosen the exclude list.")
+        st.stop()
 
 # ----------------------------------------------------------------------------
 # Sidebar — filters
