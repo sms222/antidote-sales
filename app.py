@@ -430,24 +430,27 @@ else:
 # the cleaned set consistently.
 # ----------------------------------------------------------------------------
 
+_item_options_df = (raw[[COL["item"], COL["desc"]]].drop_duplicates()
+                    .sort_values(COL["desc"]))
+_item_options = [f"{c} — {d}" for c, d in
+                 zip(_item_options_df[COL["item"]], _item_options_df[COL["desc"]])]
+
 with st.sidebar:
     st.markdown("### Exclude items")
-    exclude_raw = st.text_area(
-        "One item code or description per line",
-        value="", height=90, key="exclude_items",
-        placeholder="e.g.\nPI0002\nTransportation\nRounding",
-        help="Each line matches an exact Item Code, or any item whose "
-             "Description contains that text (not case-sensitive). Matching "
-             "rows are removed from every tab and the report.")
+    exclude_sel = st.multiselect(
+        "Search and select items to exclude", _item_options, key="exclude_items",
+        placeholder="Type a code or description to search…",
+        help="Matches live as you type, against both item code and "
+             "description. Selected items are removed from every tab and "
+             "the report.")
 
-exclude_terms = [t.strip() for t in exclude_raw.splitlines() if t.strip()]
-if exclude_terms:
-    codes_upper = raw[COL["item"]].astype(str).str.upper()
-    desc_upper = raw[COL["desc"]].astype(str).str.upper()
-    mask = pd.Series(False, index=raw.index)
-    for term in exclude_terms:
-        t = term.upper()
-        mask |= (codes_upper == t) | desc_upper.str.contains(t, regex=False, na=False)
+if exclude_sel:
+    exclude_codes = {s.split(" — ", 1)[0] for s in exclude_sel}
+    has_blank_code = "nan" in exclude_codes
+    real_codes = exclude_codes - {"nan"}
+    mask = raw[COL["item"]].astype(str).isin(real_codes)
+    if has_blank_code:
+        mask |= raw[COL["item"]].isna()
     n_excluded = int(mask.sum())
     if n_excluded:
         with st.sidebar:
